@@ -1,3 +1,4 @@
 const { serve } = require(".");
+const os = require("os");
 
-serve("/tmp/power-repl.sock");
+serve(os.tmpdir() + "/power-repl.sock");

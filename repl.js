@@ -1,3 +1,4 @@
 const { connect } = require(".");
+const os = require("os");
 
-connect("/tmp/power-repl.sock");
+connect(os.tmpdir() + "/power-repl.sock");

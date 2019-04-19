@@ -11,7 +11,7 @@ const cluster = require("cluster");
 const readline = require("readline");
 const node_repl_await_1 = require("node-repl-await");
 const isSocketResetError = require("is-socket-reset-error");
-const AllowAwait = Number(process.version.slice(1)) >= 7.6;
+const AllowAwait = parseFloat(process.version.slice(1)) >= 7.6;
 function isRecoverableError(error) {
     if (error.name === 'SyntaxError') {
         return /^(Unexpected end of input|Unexpected token)/.test(error.message);
@@ -88,6 +88,7 @@ function serve(options) {
                 if (yield fs.pathExists(options)) {
                     yield fs.unlink(options);
                 }
+                options = resolveSockPath(options);
             }
             server.listen(options, () => {
                 server.removeListener("error", reject);
@@ -104,17 +105,20 @@ function connect(options) {
         let timeout = isPath ? void 0 : options["timeout"];
         let socket = yield new Promise((resolve, reject) => tslib_1.__awaiter(this, void 0, void 0, function* () {
             let socket;
-            if (cluster.isWorker && os.platform() === "win32" && socketPath) {
+            if (socketPath) {
                 try {
-                    let port = Number(yield fs.readFile(socketPath, "utf8"));
-                    socket = net.createConnection({
-                        port,
-                        host: "127.0.0.1",
-                        timeout
-                    }, () => {
-                        socket.removeListener("error", reject);
-                        resolve(socket);
-                    }).once("error", reject);
+                    let stat = yield fs.stat(socketPath);
+                    if (stat.isFile) {
+                        let port = Number(yield fs.readFile(socketPath, "utf8"));
+                        socket = net.createConnection({
+                            port,
+                            host: "127.0.0.1",
+                            timeout
+                        }, () => {
+                            socket.removeListener("error", reject);
+                            resolve(socket);
+                        }).once("error", reject);
+                    }
                 }
                 catch (err) {
                     reject(err);

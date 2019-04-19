@@ -9,7 +9,7 @@ import * as readline from "readline";
 import { processTopLevelAwait } from "node-repl-await";
 import isSocketResetError = require('is-socket-reset-error');
 
-const AllowAwait = Number(process.version.slice(1)) >= 7.6;
+const AllowAwait = parseFloat(process.version.slice(1)) >= 7.6;
 
 function isRecoverableError(error: Error) {
     if (error.name === 'SyntaxError') {
@@ -112,6 +112,8 @@ export async function serve(options: string | net.ListenOptions) {
             if (await fs.pathExists(options)) {
                 await fs.unlink(options);
             }
+
+            options = resolveSockPath(options);
         }
 
         server.listen(options, () => {
@@ -130,22 +132,27 @@ export async function connect(options: string | net.NetConnectOpts) {
     let socket: net.Socket = await new Promise(async (resolve, reject) => {
         let socket: net.Socket;
 
-        if (cluster.isWorker && os.platform() === "win32" && socketPath) {
-            // If the current process is a cluster worker and the system is
-            // Windows, when providing a socket path, get the listening port
-            // from the file for connecting instead of binding the socket to the
-            // file.
+        if (socketPath) {
+            // If the REPL server runs in a cluster worker and the system is
+            // Windows, it will listens a random port and store the port in the
+            // socket path as a regular file, when providing a socket path and
+            // detecting the path is a regular file, get the listening port from
+            // the file for connection instead of binding the socket to the file.
             try {
-                let port = Number(await fs.readFile(socketPath, "utf8"));
+                let stat = await fs.stat(socketPath);
 
-                socket = net.createConnection({
-                    port,
-                    host: "127.0.0.1",
-                    timeout
-                }, () => {
-                    socket.removeListener("error", reject);
-                    resolve(socket);
-                }).once("error", reject);
+                if (stat.isFile) {
+                    let port = Number(await fs.readFile(socketPath, "utf8"));
+
+                    socket = net.createConnection({
+                        port,
+                        host: "127.0.0.1",
+                        timeout
+                    }, () => {
+                        socket.removeListener("error", reject);
+                        resolve(socket);
+                    }).once("error", reject);
+                }
             } catch (err) {
                 reject(err);
             }
