@@ -141,10 +141,10 @@ export async function connect(options: string | net.NetConnectOpts) {
             try {
                 let stat = await fs.stat(socketPath);
 
-                if (stat.isFile) {
+                if (stat.isFile && !stat.isSocket) {
                     let port = Number(await fs.readFile(socketPath, "utf8"));
 
-                    socket = net.createConnection({
+                    return socket = net.createConnection({
                         port,
                         host: "127.0.0.1",
                         timeout
@@ -154,18 +154,18 @@ export async function connect(options: string | net.NetConnectOpts) {
                     }).once("error", reject);
                 }
             } catch (err) {
-                reject(err);
+                return reject(err);
             }
-        } else {
-            if (isPath) {
-                options = resolveSockPath(<string>options);
-            }
-
-            socket = net.createConnection(<any>options, () => {
-                socket.removeListener("error", reject);
-                resolve(socket);
-            }).once("error", reject);
         }
+
+        if (isPath) {
+            options = resolveSockPath(<string>options);
+        }
+
+        socket = net.createConnection(<any>options, () => {
+            socket.removeListener("error", reject);
+            resolve(socket);
+        }).once("error", reject);
     });
 
     // Create a new readline interface instead of using the `process.stdin`

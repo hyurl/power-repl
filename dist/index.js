@@ -108,9 +108,9 @@ function connect(options) {
             if (socketPath) {
                 try {
                     let stat = yield fs.stat(socketPath);
-                    if (stat.isFile) {
+                    if (stat.isFile && !stat.isSocket) {
                         let port = Number(yield fs.readFile(socketPath, "utf8"));
-                        socket = net.createConnection({
+                        return socket = net.createConnection({
                             port,
                             host: "127.0.0.1",
                             timeout
@@ -121,18 +121,16 @@ function connect(options) {
                     }
                 }
                 catch (err) {
-                    reject(err);
+                    return reject(err);
                 }
             }
-            else {
-                if (isPath) {
-                    options = resolveSockPath(options);
-                }
-                socket = net.createConnection(options, () => {
-                    socket.removeListener("error", reject);
-                    resolve(socket);
-                }).once("error", reject);
+            if (isPath) {
+                options = resolveSockPath(options);
             }
+            socket = net.createConnection(options, () => {
+                socket.removeListener("error", reject);
+                resolve(socket);
+            }).once("error", reject);
         }));
         let input = readline.createInterface({
             input: process.stdin,
