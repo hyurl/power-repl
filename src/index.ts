@@ -132,27 +132,24 @@ export async function connect(options: string | net.NetConnectOpts) {
     let socket: net.Socket = await new Promise(async (resolve, reject) => {
         let socket: net.Socket;
 
-        if (socketPath) {
+        if (socketPath && os.platform() === "win32"
+            && (await fs.pathExists(socketPath))) {
             // If the REPL server runs in a cluster worker and the system is
             // Windows, it will listens a random port and store the port in the
             // socket path as a regular file, when providing a socket path and
             // detecting the path is a regular file, get the listening port from
             // the file for connection instead of binding the socket to the file.
             try {
-                let stat = await fs.stat(socketPath);
+                let port = Number(await fs.readFile(socketPath, "utf8"));
 
-                if (stat.isFile && !stat.isSocket) {
-                    let port = Number(await fs.readFile(socketPath, "utf8"));
-
-                    return socket = net.createConnection({
-                        port,
-                        host: "127.0.0.1",
-                        timeout
-                    }, () => {
-                        socket.removeListener("error", reject);
-                        resolve(socket);
-                    }).once("error", reject);
-                }
+                return socket = net.createConnection({
+                    port,
+                    host: "127.0.0.1",
+                    timeout
+                }, () => {
+                    socket.removeListener("error", reject);
+                    resolve(socket);
+                }).once("error", reject);
             } catch (err) {
                 return reject(err);
             }

@@ -105,20 +105,18 @@ function connect(options) {
         let timeout = isPath ? void 0 : options["timeout"];
         let socket = yield new Promise((resolve, reject) => tslib_1.__awaiter(this, void 0, void 0, function* () {
             let socket;
-            if (socketPath) {
+            if (socketPath && os.platform() === "win32"
+                && (yield fs.pathExists(socketPath))) {
                 try {
-                    let stat = yield fs.stat(socketPath);
-                    if (stat.isFile && !stat.isSocket) {
-                        let port = Number(yield fs.readFile(socketPath, "utf8"));
-                        return socket = net.createConnection({
-                            port,
-                            host: "127.0.0.1",
-                            timeout
-                        }, () => {
-                            socket.removeListener("error", reject);
-                            resolve(socket);
-                        }).once("error", reject);
-                    }
+                    let port = Number(yield fs.readFile(socketPath, "utf8"));
+                    return socket = net.createConnection({
+                        port,
+                        host: "127.0.0.1",
+                        timeout
+                    }, () => {
+                        socket.removeListener("error", reject);
+                        resolve(socket);
+                    }).once("error", reject);
                 }
                 catch (err) {
                     return reject(err);
