@@ -11,6 +11,7 @@ const cluster = require("cluster");
 const readline = require("readline");
 const node_repl_await_1 = require("node-repl-await");
 const isSocketResetError = require("is-socket-reset-error");
+const AllowAwait = Number(process.version.slice(1)) >= 7.6;
 function isRecoverableError(error) {
     if (error.name === 'SyntaxError') {
         return /^(Unexpected end of input|Unexpected token)/.test(error.message);
@@ -35,7 +36,7 @@ function serve(options) {
                 useGlobal: true,
                 eval(code, context, filename, callback) {
                     return tslib_1.__awaiter(this, void 0, void 0, function* () {
-                        code = node_repl_await_1.processTopLevelAwait(code) || code;
+                        code = AllowAwait ? (node_repl_await_1.processTopLevelAwait(code) || code) : code;
                         try {
                             callback(null, yield vm.runInNewContext(code, context, {
                                 filename

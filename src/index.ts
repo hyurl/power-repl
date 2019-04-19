@@ -9,6 +9,8 @@ import * as readline from "readline";
 import { processTopLevelAwait } from "node-repl-await";
 import isSocketResetError = require('is-socket-reset-error');
 
+const AllowAwait = Number(process.version.slice(1)) >= 7.6;
+
 function isRecoverableError(error: Error) {
     if (error.name === 'SyntaxError') {
         return /^(Unexpected end of input|Unexpected token)/.test(error.message);
@@ -38,7 +40,7 @@ export async function serve(options: string | net.ListenOptions) {
             async eval(code, context, filename, callback) {
                 // Backed by `processTopLevelAwait`, any `await` statement
                 // can be resolved in this eval function.
-                code = processTopLevelAwait(code) || code;
+                code = AllowAwait ? (processTopLevelAwait(code) || code) : code;
 
                 try {
                     callback(null, await vm.runInNewContext(code, context, {
