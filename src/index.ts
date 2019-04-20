@@ -8,6 +8,7 @@ import * as cluster from "cluster";
 import * as readline from "readline";
 import { processTopLevelAwait } from "node-repl-await";
 import isSocketResetError = require('is-socket-reset-error');
+import pick = require("lodash/pick");
 
 const AllowAwait = parseFloat(process.version.slice(1)) >= 7.6;
 
@@ -26,17 +27,28 @@ function resolveSockPath(path: string) {
     }
 }
 
+export interface ConnectOptions {
+    [x: string]: any;
+    path?: string;
+    port?: number;
+    host?: string;
+    timeout?: number;
+    noStdout?: boolean;
+}
+
 export async function serve(path: string): Promise<net.Server>;
 export async function serve(options: net.ListenOptions): Promise<net.Server>;
-export async function serve(options: string | net.ListenOptions) {
-    let sessions = new Set<net.Socket>();
+export async function serve(arg: string | net.ListenOptions) {
+    let options = typeof arg === "string" ? { path: arg } : arg;
+    let sockPath: string = options["path"];
+    let stdoutSessions = new Set<net.Socket>();
     let _write = process.stdout.write;
 
     // Rewrite the stdout.write method to allow data being redirected to sockets.
     process.stdout.write = (...args: any[]) => {
         let res = _write.apply(process.stdout, args);
 
-        for (let socket of sessions) {
+        for (let socket of stdoutSessions) {
             socket.write.apply(socket, args);
         }
 
@@ -44,44 +56,13 @@ export async function serve(options: string | net.ListenOptions) {
     };
 
     let server = net.createServer(socket => {
-        // Create a new REPL server for every connection.
-        let replServer = repl.start({
-            input: socket,  // Bind input and output stream of the REPL session
-            output: socket, // directly to the socket.
-            useColors: true,
-            useGlobal: true,
-            async eval(code, context, filename, callback) {
-                // Backed by `processTopLevelAwait`, any `await` statement
-                // can be resolved in this eval function.
-                code = AllowAwait ? (processTopLevelAwait(code) || code) : code;
-
-                try {
-                    callback(null, await vm.runInNewContext(code, context, {
-                        filename
-                    }));
-                } catch (err) {
-                    if (isRecoverableError(err)) {
-                        callback(new repl.Recoverable(err), void 0);
-                    } else {
-                        callback(err, void 0);
-                    }
-                }
-            }
-        });
-
-        sessions.add(socket);
-
-        // When receiving the `.exit` command, destroy the socket as well.
-        replServer.on("exit", () => {
-            sessions.delete(socket);
-            socket.destroy();
-        });
+        let replServer: repl.REPLServer;
 
         // When the socket is closed, whether before exiting the REPL session or
         // other situations, make sure the REPL server for the current socket is
         // also closed.
         socket.on("close", () => {
-            replServer.close();
+            replServer && replServer.close();
         }).on("error", err => {
             // A socket reset error happens when the REPL server is about to
             // output data, the socket connection got lost. Since the evaluation
@@ -89,12 +70,62 @@ export async function serve(options: string | net.ListenOptions) {
             if (!isSocketResetError(err)) {
                 console.log(err);
             }
+        }).once("data", buf => {
+            // HANDSHAKE
+            // Every client that connects to the REPL server, once the
+            // connection is established, the client shall send a JSON message
+            // of options for handshake and to config the session immediately.
+            // The server will try to parse the first frame as handshake config,
+            // however if the first frame of data is malformed, it should be
+            // considered that the connection is unrecognized, and terminate the
+            // connection immediately.
+            try {
+                let connOpts: ConnectOptions = JSON.parse(String(buf));
+
+                !connOpts.noStdout && stdoutSessions.add(socket);
+
+                // Create a new REPL server for every connection.
+                replServer = repl.start({
+                    input: socket,  // Bind input and output stream of the REPL
+                    output: socket, // session directly to the socket.
+                    useColors: true,
+                    useGlobal: true,
+                    async eval(code, context, filename, callback) {
+                        // Backed by `processTopLevelAwait`, any `await` 
+                        // statement can be resolved in this eval function.
+                        code = AllowAwait
+                            ? (processTopLevelAwait(code) || code)
+                            : code;
+
+                        try {
+                            callback(null, await vm.runInNewContext(
+                                code,
+                                context,
+                                { filename }
+                            ));
+                        } catch (err) {
+                            if (isRecoverableError(err)) {
+                                callback(new repl.Recoverable(err), void 0);
+                            } else {
+                                callback(err, void 0);
+                            }
+                        }
+                    }
+                });
+
+                // When receiving the `.exit` command, destroy the socket as 
+                // well.
+                replServer.on("exit", () => {
+                    !connOpts.noStdout && stdoutSessions.delete(socket);
+                    socket.destroy();
+                });
+            } catch (err) {
+                socket.destroy();
+            }
         });
     });
 
-    if (typeof options === "string") {
-        let sockPath = options;
-
+    if (sockPath) {
         // Ensures the directory of socket path exists.
         await fs.ensureDir(path.dirname(sockPath));
 
@@ -124,12 +155,12 @@ export async function serve(options: string | net.ListenOptions) {
         // When listening to a socket path, if the path already exists, e.g.
         // created at the last time running the program, it must be removed
         // before listening again.
-        if (typeof options === "string") {
-            if (await fs.pathExists(options)) {
-                await fs.unlink(options);
+        if (sockPath) {
+            if (await fs.pathExists(sockPath)) {
+                await fs.unlink(sockPath);
             }
 
-            options = resolveSockPath(options);
+            options["path"] = resolveSockPath(sockPath);
         }
 
         server.listen(options, () => {
@@ -140,45 +171,52 @@ export async function serve(options: string | net.ListenOptions) {
 }
 
 export async function connect(path: string): Promise<net.Socket>;
-export async function connect(options: net.NetConnectOpts): Promise<net.Socket>;
-export async function connect(options: string | net.NetConnectOpts) {
-    let isPath = typeof options === "string";
-    let socketPath: string = isPath ? options : options["path"];
-    let timeout: number = isPath ? void 0 : options["timeout"];
+export async function connect(options: ConnectOptions): Promise<net.Socket>;
+export async function connect(arg: string | ConnectOptions) {
+    let options = typeof arg === "string" ? { path: arg } : arg;
+    let sockPath: string = options["path"];
+
     let socket: net.Socket = await new Promise(async (resolve, reject) => {
-        let socket: net.Socket;
+        let socket: net.Socket = new net.Socket();
 
-        if (socketPath && os.platform() === "win32"
-            && (await fs.pathExists(socketPath))) {
-            // If the REPL server runs in a cluster worker and the system is
-            // Windows, it will listens a random port and store the port in the
-            // socket path as a regular file, when providing a socket path and
-            // detecting the path is a regular file, get the listening port from
-            // the file for connection instead of binding the socket to the file.
-            try {
-                let port = Number(await fs.readFile(socketPath, "utf8"));
-
-                return socket = net.createConnection({
-                    port,
-                    host: "127.0.0.1",
-                    timeout
-                }, () => {
-                    socket.removeListener("error", reject);
-                    resolve(socket);
-                }).once("error", reject);
-            } catch (err) {
-                return reject(err);
-            }
-        }
-
-        if (isPath) {
-            options = resolveSockPath(<string>options);
-        }
-
-        socket = net.createConnection(<any>options, () => {
+        socket.once("error", reject).once("connect", () => {
             socket.removeListener("error", reject);
-            resolve(socket);
-        }).once("error", reject);
+
+            let data = pick(options, ["noStdout"]);
+
+            // HANDSHAKE
+            socket.write(JSON.stringify(data), err => {
+                err ? reject(err) : resolve(socket);
+            });
+        });
+
+        if (sockPath) {
+            if (os.platform() === "win32" && (await fs.pathExists(sockPath))) {
+                // If the REPL server runs in a cluster worker and the system is
+                // Windows, it will listens a random port and store the port in
+                // the socket path as a regular file, when providing a socket 
+                // path and detecting the path is a regular file, get the 
+                // listening port from the file for connection instead of 
+                // binding the socket to the file.
+                try {
+                    let port = Number(await fs.readFile(sockPath, "utf8"));
+
+                    socket.connect(<net.NetConnectOpts>{
+                        port,
+                        host: "127.0.0.1",
+                        timeout: options.timeout
+                    });
+                } catch (err) {
+                    reject(err);
+                }
+
+                return;
+            }
+
+            options["path"] = resolveSockPath(sockPath);
+        }
+
+        socket.connect(<net.NetConnectOpts>options);
     });
 
     // Create a new readline interface instead of using the `process.stdin`

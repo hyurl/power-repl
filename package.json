@@ -29,10 +29,12 @@
     "@types/fs-extra": "^5.0.5",
     "fs-extra": "^7.0.1",
     "is-socket-reset-error": "^0.1.1",
+    "lodash": "^4.17.11",
     "node-repl-await": "^0.1.0",
     "tslib": "^1.9.3"
   },
   "devDependencies": {
+    "@types/lodash": "^4.14.123",
     "@types/node": "^11.13.5"
   }
 }

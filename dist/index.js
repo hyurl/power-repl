@@ -11,6 +11,7 @@ const cluster = require("cluster");
 const readline = require("readline");
 const node_repl_await_1 = require("node-repl-await");
 const isSocketResetError = require("is-socket-reset-error");
+const pick = require("lodash/pick");
 const AllowAwait = parseFloat(process.version.slice(1)) >= 7.6;
 function isRecoverableError(error) {
     if (error.name === 'SyntaxError') {
@@ -26,57 +27,66 @@ function resolveSockPath(path) {
         return "\\\\.\\pipe\\" + path;
     }
 }
-function serve(options) {
+function serve(arg) {
     return tslib_1.__awaiter(this, void 0, void 0, function* () {
-        let sessions = new Set();
+        let options = typeof arg === "string" ? { path: arg } : arg;
+        let sockPath = options["path"];
+        let stdoutSessions = new Set();
         let _write = process.stdout.write;
         process.stdout.write = (...args) => {
             let res = _write.apply(process.stdout, args);
-            for (let socket of sessions) {
+            for (let socket of stdoutSessions) {
                 socket.write.apply(socket, args);
             }
             return res;
         };
         let server = net.createServer(socket => {
-            let replServer = repl.start({
-                input: socket,
-                output: socket,
-                useColors: true,
-                useGlobal: true,
-                eval(code, context, filename, callback) {
-                    return tslib_1.__awaiter(this, void 0, void 0, function* () {
-                        code = AllowAwait ? (node_repl_await_1.processTopLevelAwait(code) || code) : code;
-                        try {
-                            callback(null, yield vm.runInNewContext(code, context, {
-                                filename
-                            }));
-                        }
-                        catch (err) {
-                            if (isRecoverableError(err)) {
-                                callback(new repl.Recoverable(err), void 0);
-                            }
-                            else {
-                                callback(err, void 0);
-                            }
-                        }
-                    });
-                }
-            });
-            sessions.add(socket);
-            replServer.on("exit", () => {
-                sessions.delete(socket);
-                socket.destroy();
-            });
+            let replServer;
             socket.on("close", () => {
-                replServer.close();
+                replServer && replServer.close();
             }).on("error", err => {
                 if (!isSocketResetError(err)) {
                     console.log(err);
                 }
+            }).once("data", buf => {
+                try {
+                    let connOpts = JSON.parse(String(buf));
+                    !connOpts.noStdout && stdoutSessions.add(socket);
+                    replServer = repl.start({
+                        input: socket,
+                        output: socket,
+                        useColors: true,
+                        useGlobal: true,
+                        eval(code, context, filename, callback) {
+                            return tslib_1.__awaiter(this, void 0, void 0, function* () {
+                                code = AllowAwait
+                                    ? (node_repl_await_1.processTopLevelAwait(code) || code)
+                                    : code;
+                                try {
+                                    callback(null, yield vm.runInNewContext(code, context, { filename }));
+                                }
+                                catch (err) {
+                                    if (isRecoverableError(err)) {
+                                        callback(new repl.Recoverable(err), void 0);
+                                    }
+                                    else {
+                                        callback(err, void 0);
+                                    }
+                                }
+                            });
+                        }
+                    });
+                    replServer.on("exit", () => {
+                        !connOpts.noStdout && stdoutSessions.delete(socket);
+                        socket.destroy();
+                    });
+                }
+                catch (err) {
+                    socket.destroy();
+                }
             });
         });
-        if (typeof options === "string") {
-            let sockPath = options;
+        if (sockPath) {
             yield fs.ensureDir(path.dirname(sockPath));
             if (cluster.isWorker && os.platform() === "win32") {
                 return new Promise((resolve, reject) => {
@@ -95,11 +105,11 @@ function serve(options) {
             }
         }
         return new Promise((resolve, reject) => tslib_1.__awaiter(this, void 0, void 0, function* () {
-            if (typeof options === "string") {
-                if (yield fs.pathExists(options)) {
-                    yield fs.unlink(options);
+            if (sockPath) {
+                if (yield fs.pathExists(sockPath)) {
+                    yield fs.unlink(sockPath);
                 }
-                options = resolveSockPath(options);
+                options["path"] = resolveSockPath(sockPath);
             }
             server.listen(options, () => {
                 server.removeListener("error", reject);
@@ -109,37 +119,37 @@ function serve(options) {
     });
 }
 exports.serve = serve;
-function connect(options) {
+function connect(arg) {
     return tslib_1.__awaiter(this, void 0, void 0, function* () {
-        let isPath = typeof options === "string";
-        let socketPath = isPath ? options : options["path"];
-        let timeout = isPath ? void 0 : options["timeout"];
+        let options = typeof arg === "string" ? { path: arg } : arg;
+        let sockPath = options["path"];
         let socket = yield new Promise((resolve, reject) => tslib_1.__awaiter(this, void 0, void 0, function* () {
-            let socket;
-            if (socketPath && os.platform() === "win32"
-                && (yield fs.pathExists(socketPath))) {
-                try {
-                    let port = Number(yield fs.readFile(socketPath, "utf8"));
-                    return socket = net.createConnection({
-                        port,
-                        host: "127.0.0.1",
-                        timeout
-                    }, () => {
-                        socket.removeListener("error", reject);
-                        resolve(socket);
-                    }).once("error", reject);
-                }
-                catch (err) {
-                    return reject(err);
-                }
-            }
-            if (isPath) {
-                options = resolveSockPath(options);
-            }
-            socket = net.createConnection(options, () => {
+            let socket = new net.Socket();
+            socket.once("error", reject).once("connect", () => {
                 socket.removeListener("error", reject);
-                resolve(socket);
-            }).once("error", reject);
+                let data = pick(options, ["noStdout"]);
+                socket.write(JSON.stringify(data), err => {
+                    err ? reject(err) : resolve(socket);
+                });
+            });
+            if (sockPath) {
+                if (os.platform() === "win32" && (yield fs.pathExists(sockPath))) {
+                    try {
+                        let port = Number(yield fs.readFile(sockPath, "utf8"));
+                        socket.connect({
+                            port,
+                            host: "127.0.0.1",
+                            timeout: options.timeout
+                        });
+                    }
+                    catch (err) {
+                        reject(err);
+                    }
+                    return;
+                }
+                options["path"] = resolveSockPath(sockPath);
+            }
+            socket.connect(options);
         }));
         let input = readline.createInterface({
             input: process.stdin,

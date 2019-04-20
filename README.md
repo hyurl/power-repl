@@ -44,7 +44,16 @@ function serve(path: string): Promise<net.Server>;
 function serve(options: net.ListenOptions): Promise<net.Server>;
 
 function connect(path: string): Promise<net.Socket>;
-function connect(options: net.NetConnectOpts): Promise<net.Socket>;
+function connect(options: ConnectOptions): Promise<net.Socket>;
+
+export interface ConnectOptions {
+    [x: string]: any;
+    path?: string;
+    port?: number;
+    host?: string;
+    timeout?: number;
+    noStdout?: boolean;
+}
 ```
 
 As you can see from the API specification, you can even serve and connect to the
