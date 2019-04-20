@@ -161,6 +161,10 @@ function connect(arg) {
         socket.pipe(process.stdout);
         socket.on("close", (hadError) => {
             process.exit(hadError ? 1 : 0);
+        }).on("error", (err) => {
+            if (!isSocketResetError(err)) {
+                console.log(err);
+            }
         });
         return socket;
     });
