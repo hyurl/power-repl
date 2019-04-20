@@ -28,6 +28,15 @@ function resolveSockPath(path) {
 }
 function serve(options) {
     return tslib_1.__awaiter(this, void 0, void 0, function* () {
+        let sessions = new Set();
+        let _write = process.stdout.write;
+        process.stdout.write = (...args) => {
+            let res = _write.apply(process.stdout, args);
+            for (let socket of sessions) {
+                socket.write.apply(socket, args);
+            }
+            return res;
+        };
         let server = net.createServer(socket => {
             let replServer = repl.start({
                 input: socket,
@@ -53,7 +62,9 @@ function serve(options) {
                     });
                 }
             });
+            sessions.add(socket);
             replServer.on("exit", () => {
+                sessions.delete(socket);
                 socket.destroy();
             });
             socket.on("close", () => {

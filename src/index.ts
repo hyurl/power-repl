@@ -26,10 +26,23 @@ function resolveSockPath(path: string) {
     }
 }
 
-
 export async function serve(path: string): Promise<net.Server>;
 export async function serve(options: net.ListenOptions): Promise<net.Server>;
 export async function serve(options: string | net.ListenOptions) {
+    let sessions = new Set<net.Socket>();
+    let _write = process.stdout.write;
+
+    // Rewrite the stdout.write method to allow data being redirected to sockets.
+    process.stdout.write = (...args: any[]) => {
+        let res = _write.apply(process.stdout, args);
+
+        for (let socket of sessions) {
+            socket.write.apply(socket, args);
+        }
+
+        return res;
+    };
+
     let server = net.createServer(socket => {
         // Create a new REPL server for every connection.
         let replServer = repl.start({
@@ -56,8 +69,11 @@ export async function serve(options: string | net.ListenOptions) {
             }
         });
 
+        sessions.add(socket);
+
         // When receiving the `.exit` command, destroy the socket as well.
         replServer.on("exit", () => {
+            sessions.delete(socket);
             socket.destroy();
         });
 
