@@ -130,7 +130,7 @@ function connect(arg) {
             let socket = new net.Socket();
             socket.once("error", reject).once("connect", () => {
                 socket.removeListener("error", reject);
-                let data = pick(options, ["noStdout"]);
+                let data = pick(options, ["prompt", "noStdout"]);
                 socket.write(JSON.stringify(data), err => {
                     err ? reject(err) : resolve(socket);
                 });
