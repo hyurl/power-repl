@@ -2,6 +2,7 @@
 node_modules/
 *.sock
 *.tgz
+.*
 server*.js
 repl*.js
 tsconfig.json

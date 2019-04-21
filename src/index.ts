@@ -27,15 +27,6 @@ function resolveSockPath(path: string) {
     }
 }
 
-export interface ConnectOptions {
-    [x: string]: any;
-    path?: string;
-    port?: number;
-    host?: string;
-    timeout?: number;
-    noStdout?: boolean;
-}
-
 export async function serve(path: string): Promise<net.Server>;
 export async function serve(options: net.ListenOptions): Promise<net.Server>;
 export async function serve(arg: string | net.ListenOptions) {
@@ -170,12 +161,23 @@ export async function serve(arg: string | net.ListenOptions) {
     });
 }
 
+export interface ConnectOptions {
+    [x: string]: any;
+    path?: string;
+    port?: number;
+    host?: string;
+    timeout?: number;
+    noStdout?: boolean;
+    history?: string;
+    historySize?: number;
+    removeHistoryDuplicates?: boolean;
+}
+
 export async function connect(path: string): Promise<net.Socket>;
 export async function connect(options: ConnectOptions): Promise<net.Socket>;
 export async function connect(arg: string | ConnectOptions) {
     let options = typeof arg === "string" ? { path: arg } : arg;
     let sockPath: string = options["path"];
-
     let socket: net.Socket = await new Promise(async (resolve, reject) => {
         let socket: net.Socket = new net.Socket();
 
@@ -219,13 +221,20 @@ export async function connect(arg: string | ConnectOptions) {
         socket.connect(<net.NetConnectOpts>options);
     });
 
+    options.history = options.history || process.cwd() + "/.node_repl_history";
+    options.historySize = options.historySize || 100;
+
     // Create a new readline interface instead of using the `process.stdin`
     // directly, since the later causes some problem in Unix terminals, e.g.
     // when pressing keys like 'Up' and 'Down', instead of giving history
     // suggestions, process.stdin causes inputting malformed characters.
     let input = readline.createInterface({
         input: process.stdin,
-        output: process.stdout
+        output: process.stdout,
+        ...pick(options, [
+            "historySize",
+            "removeHistoryDuplicates"
+        ])
     });
 
     // Write every line inputted to the socket stream.
@@ -237,7 +246,39 @@ export async function connect(arg: string | ConnectOptions) {
     // output stream.
     socket.pipe(process.stdout);
 
-    socket.on("close", (hadError) => {
+    // HACK for persistent history support.
+    let addHistory: Function = input["_addHistory"];
+    let history: string[] = [];
+    let REPLKeyword = /^\s*\./;
+
+    // Try to load history form file.
+    try {
+        history = (await fs.readFile(options.history, "utf8")).split("\n");
+    } catch (err) { }
+
+    // Patch history to the readline interface.
+    if (history.length > 0) {
+        input["history"] = (<string[]>input["history"] || []).concat(history);
+    }
+
+    // History support needs to rewrite Node.js readline._addHistory method.
+    input["_addHistory"] = function (this: readline.Interface, ...args: any[]) {
+        let line = addHistory.apply(input, args);
+
+        if (REPLKeyword.test(line[0]) === false) { // do not log REPL keyword
+            history = [].concat(input["history"]);
+        }
+
+        return line;
+    }
+
+    // When the socket is closed, also write history to the given path, and
+    // close the readline interface as well, then exit the process.
+    socket.on("close", async (hadError) => {
+        await fs.ensureDir(path.dirname(options.history));
+        await fs.writeFile(options.history, history.join("\n"), "utf8");
+
+        input.close();
         process.exit(hadError ? 1 : 0);
     }).on("error", (err) => {
         if (!isSocketResetError(err)) {

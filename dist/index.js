@@ -151,17 +151,39 @@ function connect(arg) {
             }
             socket.connect(options);
         }));
-        let input = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout
-        });
+        options.history = options.history || process.cwd() + "/.node_repl_history";
+        options.historySize = options.historySize || 100;
+        let input = readline.createInterface(Object.assign({ input: process.stdin, output: process.stdout }, pick(options, [
+            "historySize",
+            "removeHistoryDuplicates"
+        ])));
         input.on("line", line => {
             socket.write(line + "\n");
         });
         socket.pipe(process.stdout);
-        socket.on("close", (hadError) => {
+        let addHistory = input["_addHistory"];
+        let history = [];
+        let REPLKeyword = /^\s*\./;
+        try {
+            history = (yield fs.readFile(options.history, "utf8")).split("\n");
+        }
+        catch (err) { }
+        if (history.length > 0) {
+            input["history"] = (input["history"] || []).concat(history);
+        }
+        input["_addHistory"] = function (...args) {
+            let line = addHistory.apply(input, args);
+            if (REPLKeyword.test(line[0]) === false) {
+                history = [].concat(input["history"]);
+            }
+            return line;
+        };
+        socket.on("close", (hadError) => tslib_1.__awaiter(this, void 0, void 0, function* () {
+            yield fs.ensureDir(path.dirname(options.history));
+            yield fs.writeFile(options.history, history.join("\n"), "utf8");
+            input.close();
             process.exit(hadError ? 1 : 0);
-        }).on("error", (err) => {
+        })).on("error", (err) => {
             if (!isSocketResetError(err)) {
                 console.log(err);
             }

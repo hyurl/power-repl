@@ -53,18 +53,26 @@ export interface ConnectOptions {
     host?: string;
     timeout?: number;
     noStdout?: boolean;
+    history?: string;
+    historySize?: number;
+    removeHistoryDuplicates?: boolean;
 }
 ```
 
 As you can see from the API specification, you can even serve and connect to the
 REPL server through the internet.
 
-## `await` support
+## `await` Support
 
 Backed by [node-repl-await](https://npmjs.com/package/node-repl-await), you can
 freely use any `await` statement in PowerREPL, which really helps a lot.
 
+## Persistent History
+
+By default, PowerREPL will persist history between REPL sessions by saving 
+inputs to a `.node_repl_history` file located in the current working directory.
+This behavior can be configured by providing the `history` option when connect.
+
 ## TODO
 
-- Persistent history
 - Tab key auto-complete
