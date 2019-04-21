@@ -53,6 +53,7 @@ function serve(arg) {
                     let connOpts = JSON.parse(String(buf));
                     !connOpts.noStdout && stdoutSessions.add(socket);
                     replServer = repl.start({
+                        prompt: connOpts.prompt,
                         input: socket,
                         output: socket,
                         useColors: true,
@@ -66,6 +67,8 @@ function serve(arg) {
                                     callback(null, yield vm.runInNewContext(code, context, { filename }));
                                 }
                                 catch (err) {
+                                    if (err.name !== "SyntaxError")
+                                        delete err.stack;
                                     if (isRecoverableError(err)) {
                                         callback(new repl.Recoverable(err), void 0);
                                     }
@@ -151,34 +154,44 @@ function connect(arg) {
             }
             socket.connect(options);
         }));
-        options.history = options.history || process.cwd() + "/.node_repl_history";
+        options.prompt = options.prompt || "> ";
+        options.history = options.history || process.cwd() + "/.power_repl_history";
         options.historySize = options.historySize || 100;
+        let canExit = false;
         let input = readline.createInterface(Object.assign({ input: process.stdin, output: process.stdout }, pick(options, [
+            "prompt",
             "historySize",
             "removeHistoryDuplicates"
         ])));
         input.on("line", line => {
+            canExit = false;
             socket.write(line + "\n");
         });
-        socket.pipe(process.stdout);
-        let addHistory = input["_addHistory"];
+        socket.on("data", (buf) => {
+            let str = buf.slice(0, 5).toString();
+            if (str === "... ") {
+                input.setPrompt("... ");
+            }
+            else if (str === options.prompt) {
+                input.setPrompt(options.prompt);
+            }
+            else if (str === options.prompt + options.prompt) {
+                buf = buf.slice(0, -options.prompt.length);
+            }
+            process.stdout.write(buf);
+        });
         let history = [];
-        let REPLKeyword = /^\s*\./;
         try {
             history = (yield fs.readFile(options.history, "utf8")).split("\n");
+            history.reverse();
         }
         catch (err) { }
         if (history.length > 0) {
             input["history"] = (input["history"] || []).concat(history);
         }
-        input["_addHistory"] = function (...args) {
-            let line = addHistory.apply(input, args);
-            if (REPLKeyword.test(line[0]) === false) {
-                history = [].concat(input["history"]);
-            }
-            return line;
-        };
         socket.on("close", (hadError) => tslib_1.__awaiter(this, void 0, void 0, function* () {
+            history = input["history"];
+            history.reverse();
             yield fs.ensureDir(path.dirname(options.history));
             yield fs.writeFile(options.history, history.join("\n"), "utf8");
             input.close();
@@ -187,6 +200,22 @@ function connect(arg) {
             if (!isSocketResetError(err)) {
                 console.log(err);
             }
+        });
+        input.on("SIGINT", () => {
+            if (canExit) {
+                socket.destroy();
+            }
+            else if (input["_prompt"] === "... ") {
+                process.stdout.write("\n");
+                socket.write(".break\n");
+            }
+            else {
+                canExit = true;
+                console.log('\n(To exit, press ^C or ^D again or type .exit)');
+                input.prompt(true);
+            }
+        }).on("pause", () => {
+            socket.destroy();
         });
         return socket;
     });

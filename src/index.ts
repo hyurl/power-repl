@@ -77,6 +77,7 @@ export async function serve(arg: string | net.ListenOptions) {
 
                 // Create a new REPL server for every connection.
                 replServer = repl.start({
+                    prompt: connOpts.prompt,
                     input: socket,  // Bind input and output stream of the REPL
                     output: socket, // session directly to the socket.
                     useColors: true,
@@ -95,6 +96,9 @@ export async function serve(arg: string | net.ListenOptions) {
                                 { filename }
                             ));
                         } catch (err) {
+                            if (err.name !== "SyntaxError")
+                                delete err.stack; // delete stack trace
+
                             if (isRecoverableError(err)) {
                                 callback(new repl.Recoverable(err), void 0);
                             } else {
@@ -167,10 +171,11 @@ export interface ConnectOptions {
     port?: number;
     host?: string;
     timeout?: number;
-    noStdout?: boolean;
+    prompt?: string;
     history?: string;
     historySize?: number;
     removeHistoryDuplicates?: boolean;
+    noStdout?: boolean;
 }
 
 export async function connect(path: string): Promise<net.Socket>;
@@ -221,8 +226,11 @@ export async function connect(arg: string | ConnectOptions) {
         socket.connect(<net.NetConnectOpts>options);
     });
 
-    options.history = options.history || process.cwd() + "/.node_repl_history";
+    options.prompt = options.prompt || "> ";
+    options.history = options.history || process.cwd() + "/.power_repl_history";
     options.historySize = options.historySize || 100;
+
+    let canExit = false;
 
     // Create a new readline interface instead of using the `process.stdin`
     // directly, since the later causes some problem in Unix terminals, e.g.
@@ -232,6 +240,7 @@ export async function connect(arg: string | ConnectOptions) {
         input: process.stdin,
         output: process.stdout,
         ...pick(options, [
+            "prompt",
             "historySize",
             "removeHistoryDuplicates"
         ])
@@ -239,21 +248,44 @@ export async function connect(arg: string | ConnectOptions) {
 
     // Write every line inputted to the socket stream.
     input.on("line", line => {
+        canExit = false;
         socket.write(line + "\n");
     });
 
-    // Pipe any output data (eval result from the REPL server) to the standard
-    // output stream.
-    socket.pipe(process.stdout);
+    // Every time the REPL server sends a evaluation result, write them to the
+    // standard output.
+    socket.on("data", (buf) => {
+        let str = buf.slice(0, 5).toString();
+
+        // Fix prompt:
+        if (str === "... ") {
+            input.setPrompt("... ");
+        } else if (str === options.prompt) {
+            input.setPrompt(options.prompt);
+        } else if (str === options.prompt + options.prompt) {
+            // I don't know why, maybe a bug in Node.js, when the REPL server
+            // throws an error, it will send write prompt to the socket, since
+            // we don't want that happen in the client console, we need to cut
+            // down half of them.
+            buf = buf.slice(0, -options.prompt.length);
+        }
+
+        process.stdout.write(buf);
+    });
 
     // HACK for persistent history support.
-    let addHistory: Function = input["_addHistory"];
     let history: string[] = [];
-    let REPLKeyword = /^\s*\./;
 
     // Try to load history form file.
     try {
         history = (await fs.readFile(options.history, "utf8")).split("\n");
+
+        // Node.js readline interface save history in descent order, which is 
+        // bad for human to read, so when saving to file, PowerREPL reverse them
+        // in ascent order, which is the best practice for most Unix-like 
+        // systems. However, when reading from the file, we need to reverse the
+        // history to suit readline interface. 
+        history.reverse();
     } catch (err) { }
 
     // Patch history to the readline interface.
@@ -261,20 +293,13 @@ export async function connect(arg: string | ConnectOptions) {
         input["history"] = (<string[]>input["history"] || []).concat(history);
     }
 
-    // History support needs to rewrite Node.js readline._addHistory method.
-    input["_addHistory"] = function (this: readline.Interface, ...args: any[]) {
-        let line = addHistory.apply(input, args);
-
-        if (REPLKeyword.test(line[0]) === false) { // do not log REPL keyword
-            history = [].concat(input["history"]);
-        }
-
-        return line;
-    }
-
     // When the socket is closed, also write history to the given path, and
     // close the readline interface as well, then exit the process.
     socket.on("close", async (hadError) => {
+        // Copy history and reverse them in ascent order for saving to file.
+        history = input["history"];
+        history.reverse();
+
         await fs.ensureDir(path.dirname(options.history));
         await fs.writeFile(options.history, history.join("\n"), "utf8");
 
@@ -284,6 +309,25 @@ export async function connect(arg: string | ConnectOptions) {
         if (!isSocketResetError(err)) {
             console.log(err);
         }
+    });
+
+    // If receives SIGINT event, e.g. pressing <ctrl>-C， mark the process to
+    // be terminable.
+    input.on("SIGINT", () => {
+        if (canExit) {
+            socket.destroy();
+        } else if (input["_prompt"] === "... ") {
+            // When in the process of inputting a multi-line expression,
+            // abort further input or processing of that expression.
+            process.stdout.write("\n");
+            socket.write(".break\n");
+        } else {
+            canExit = true;
+            console.log('\n(To exit, press ^C or ^D again or type .exit)');
+            input.prompt(true);
+        }
+    }).on("pause", () => {
+        socket.destroy();
     });
 
     return socket;

@@ -52,10 +52,11 @@ export interface ConnectOptions {
     port?: number;
     host?: string;
     timeout?: number;
-    noStdout?: boolean;
+    prompt?: string;
     history?: string;
     historySize?: number;
     removeHistoryDuplicates?: boolean;
+    noStdout?: boolean;
 }
 ```
 
@@ -70,7 +71,7 @@ freely use any `await` statement in PowerREPL, which really helps a lot.
 ## Persistent History
 
 By default, PowerREPL will persist history between REPL sessions by saving 
-inputs to a `.node_repl_history` file located in the current working directory.
+inputs to a `.power_repl_history` file located in the current working directory.
 This behavior can be configured by providing the `history` option when connect.
 
 ## TODO
