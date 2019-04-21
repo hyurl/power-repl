@@ -13,9 +13,9 @@ const node_repl_await_1 = require("node-repl-await");
 const isSocketResetError = require("is-socket-reset-error");
 const pick = require("lodash/pick");
 const AllowAwait = parseFloat(process.version.slice(1)) >= 7.6;
-function isRecoverableError(error) {
-    if (error.name === 'SyntaxError') {
-        return /^(Unexpected end of input|Unexpected token)/.test(error.message);
+function isRecoverableError(err) {
+    if (err instanceof Error && err.name === 'SyntaxError') {
+        return /^(Unexpected end of input|Unexpected token)/.test(err.message);
     }
     return false;
 }
@@ -64,15 +64,22 @@ function serve(arg) {
                                     ? (node_repl_await_1.processTopLevelAwait(code) || code)
                                     : code;
                                 try {
-                                    callback(null, yield vm.runInNewContext(code, context, { filename }));
+                                    callback(null, yield vm.runInThisContext(code));
                                 }
                                 catch (err) {
-                                    if (err.name !== "SyntaxError")
-                                        delete err.stack;
                                     if (isRecoverableError(err)) {
                                         callback(new repl.Recoverable(err), void 0);
                                     }
                                     else {
+                                        if (err instanceof Error) {
+                                            let stack = err.stack;
+                                            let lines = stack.split("\n").slice(1);
+                                            let end = lines.findIndex(line => {
+                                                return /Error:/.test(line);
+                                            }) + 1;
+                                            lines = end > 0 ? lines.slice(0, end) : lines;
+                                            err.stack = lines.join("\n");
+                                        }
                                         callback(err, void 0);
                                     }
                                 }

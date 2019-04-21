@@ -1,6 +1,6 @@
 {
   "name": "power-repl",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "A powerful REPL with await and remote support.",
   "main": "dist/index.js",
   "types": "src/index.ts",
