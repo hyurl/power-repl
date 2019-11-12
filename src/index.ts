@@ -32,19 +32,26 @@ export async function serve(options: net.ListenOptions): Promise<net.Server>;
 export async function serve(arg: string | net.ListenOptions) {
     let options = typeof arg === "string" ? { path: arg } : arg;
     let sockPath: string = options["path"];
-    let stdoutSessions = new Set<net.Socket>();
-    let _write = process.stdout.write;
+    let sessions = new Set<net.Socket>();
+    let wrapWrite = (target: NodeJS.WriteStream) => {
+        let fn: Function = target.write.bind(target);
 
-    // Rewrite the stdout.write method to allow data being redirected to sockets.
-    process.stdout.write = (...args: any[]) => {
-        let res = _write.apply(process.stdout, args);
+        // Rewrite the write method to allow data being redirected to sockets.
+        return (...args: any[]) => {
+            if (sessions.size > 0) {
+                for (let socket of sessions) {
+                    socket.write.apply(socket, args);
+                }
 
-        for (let socket of stdoutSessions) {
-            socket.write.apply(socket, args);
-        }
-
-        return res;
+                return true;
+            } else {
+                return fn(...args);
+            }
+        };
     };
+
+    process.stdout.write = wrapWrite(process.stdout);
+    process.stderr.write = wrapWrite(process.stderr);
 
     let server = net.createServer(socket => {
         let replServer: repl.REPLServer;
@@ -59,7 +66,7 @@ export async function serve(arg: string | net.ListenOptions) {
             // output data, the socket connection got lost. Since the evaluation
             // is succeed, the reset error can be ignored.
             if (!isSocketResetError(err)) {
-                console.log(err);
+                console.error(err);
             }
         }).once("data", buf => {
             // HANDSHAKE
@@ -73,7 +80,7 @@ export async function serve(arg: string | net.ListenOptions) {
             try {
                 let connOpts: ConnectOptions = JSON.parse(String(buf));
 
-                !connOpts.noStdout && stdoutSessions.add(socket);
+                !connOpts.noStdout && sessions.add(socket);
 
                 // Create a new REPL server for every connection.
                 replServer = repl.start({
@@ -83,14 +90,23 @@ export async function serve(arg: string | net.ListenOptions) {
                     useColors: true,
                     useGlobal: true,
                     async eval(code, context, filename, callback) {
-                        // Backed by `processTopLevelAwait`, any `await` 
-                        // statement can be resolved in this eval function.
-                        code = AllowAwait
-                            ? (processTopLevelAwait(code) || code)
-                            : code;
-
                         try {
-                            callback(null, await vm.runInThisContext(code));
+                            // Backed by `processTopLevelAwait`, any `await` 
+                            // statement can be resolved in this eval function.
+                            let asyncCode;
+                            let result;
+
+                            if (AllowAwait) {
+                                asyncCode = processTopLevelAwait(code);
+                            }
+
+                            if (asyncCode) {
+                                result = await vm.runInThisContext(asyncCode);
+                            } else {
+                                result = vm.runInThisContext(code);
+                            }
+
+                            callback(null, result);
                         } catch (err) {
                             if (isRecoverableError(err)) {
                                 callback(new repl.Recoverable(err), void 0);
@@ -115,7 +131,7 @@ export async function serve(arg: string | net.ListenOptions) {
                 // When receiving the `.exit` command, destroy the socket as 
                 // well.
                 replServer.on("exit", () => {
-                    !connOpts.noStdout && stdoutSessions.delete(socket);
+                    !connOpts.noStdout && sessions.delete(socket);
                     socket.destroy();
                 });
             } catch (err) {
@@ -311,7 +327,7 @@ export async function connect(arg: string | ConnectOptions) {
         process.exit(hadError ? 1 : 0);
     }).on("error", (err) => {
         if (!isSocketResetError(err)) {
-            console.log(err);
+            console.error(err);
         }
     });
 
@@ -327,7 +343,7 @@ export async function connect(arg: string | ConnectOptions) {
             socket.write(".break\n");
         } else {
             canExit = true;
-            console.log('\n(To exit, press ^C or ^D again or type .exit)');
+            console.info('\n(To exit, press ^C or ^D again or type .exit)');
             input.prompt(true);
         }
     }).on("pause", () => {

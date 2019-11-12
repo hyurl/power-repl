@@ -31,27 +31,35 @@ function serve(arg) {
     return tslib_1.__awaiter(this, void 0, void 0, function* () {
         let options = typeof arg === "string" ? { path: arg } : arg;
         let sockPath = options["path"];
-        let stdoutSessions = new Set();
-        let _write = process.stdout.write;
-        process.stdout.write = (...args) => {
-            let res = _write.apply(process.stdout, args);
-            for (let socket of stdoutSessions) {
-                socket.write.apply(socket, args);
-            }
-            return res;
+        let sessions = new Set();
+        let wrapWrite = (target) => {
+            let fn = target.write.bind(target);
+            return (...args) => {
+                if (sessions.size > 0) {
+                    for (let socket of sessions) {
+                        socket.write.apply(socket, args);
+                    }
+                    return true;
+                }
+                else {
+                    return fn(...args);
+                }
+            };
         };
+        process.stdout.write = wrapWrite(process.stdout);
+        process.stderr.write = wrapWrite(process.stderr);
         let server = net.createServer(socket => {
             let replServer;
             socket.on("close", () => {
                 replServer && replServer.close();
             }).on("error", err => {
                 if (!isSocketResetError(err)) {
-                    console.log(err);
+                    console.error(err);
                 }
             }).once("data", buf => {
                 try {
                     let connOpts = JSON.parse(String(buf));
-                    !connOpts.noStdout && stdoutSessions.add(socket);
+                    !connOpts.noStdout && sessions.add(socket);
                     replServer = repl.start({
                         prompt: connOpts.prompt,
                         input: socket,
@@ -60,11 +68,19 @@ function serve(arg) {
                         useGlobal: true,
                         eval(code, context, filename, callback) {
                             return tslib_1.__awaiter(this, void 0, void 0, function* () {
-                                code = AllowAwait
-                                    ? (node_repl_await_1.processTopLevelAwait(code) || code)
-                                    : code;
                                 try {
-                                    callback(null, yield vm.runInThisContext(code));
+                                    let asyncCode;
+                                    let result;
+                                    if (AllowAwait) {
+                                        asyncCode = node_repl_await_1.processTopLevelAwait(code);
+                                    }
+                                    if (asyncCode) {
+                                        result = yield vm.runInThisContext(asyncCode);
+                                    }
+                                    else {
+                                        result = vm.runInThisContext(code);
+                                    }
+                                    callback(null, result);
                                 }
                                 catch (err) {
                                     if (isRecoverableError(err)) {
@@ -87,7 +103,7 @@ function serve(arg) {
                         }
                     });
                     replServer.on("exit", () => {
-                        !connOpts.noStdout && stdoutSessions.delete(socket);
+                        !connOpts.noStdout && sessions.delete(socket);
                         socket.destroy();
                     });
                 }
@@ -205,7 +221,7 @@ function connect(arg) {
             process.exit(hadError ? 1 : 0);
         })).on("error", (err) => {
             if (!isSocketResetError(err)) {
-                console.log(err);
+                console.error(err);
             }
         });
         input.on("SIGINT", () => {
@@ -218,7 +234,7 @@ function connect(arg) {
             }
             else {
                 canExit = true;
-                console.log('\n(To exit, press ^C or ^D again or type .exit)');
+                console.info('\n(To exit, press ^C or ^D again or type .exit)');
                 input.prompt(true);
             }
         }).on("pause", () => {
