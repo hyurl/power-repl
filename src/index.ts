@@ -111,17 +111,6 @@ export async function serve(arg: string | net.ListenOptions) {
                             if (isRecoverableError(err)) {
                                 callback(new repl.Recoverable(err), void 0);
                             } else {
-                                if (err instanceof Error) {
-                                    let stack: string = err.stack;
-                                    let lines = stack.split("\n").slice(1);
-                                    let end = lines.findIndex(line => {
-                                        return /Error:/.test(line);
-                                    }) + 1;
-
-                                    lines = end > 0 ? lines.slice(0, end) : lines;
-                                    err.stack = lines.join("\n");
-                                }
-
                                 callback(err, void 0);
                             }
                         }
